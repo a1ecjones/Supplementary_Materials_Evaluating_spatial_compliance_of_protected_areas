@@ -1,0 +1,397 @@
+---
+title: "West Coast Trail analysis"
+author: "Alec Jones"
+date: "2026-10-14"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(here)
+library(sf)
+library(ggspatial)
+library(lubridate)
+library(stars)
+library(raster)
+library(conflicted)
+
+
+conflict_prefer("select", "dplyr")
+conflict_prefer("filter", "dplyr")
+conflict_prefer("recode", "dplyr")
+```
+
+
+
+## Adding recreational fishing boat location data to the data frame
+
+To study the recreational fisher compliance of protected areas in Barkley Sound
+we used recreational fishing boat location data from DFO overflight surveys. 
+The code below adds these data to the dataframe and counts the average number
+of boats fishing around RLS sites within specified radii. We omitted aerial 
+surveys where parts of Barkley Sound were obscured by fog.
+
+### Loading in the DFO survey data
+
+#### Loading in the 2023 data
+
+```{r Loading in the  2023 DFO data}
+DFO_data_raw_2023 <- read_csv(here("./01_raw_data/DFO_data/Overflight2023_ObservationPoints_20241024.csv"))
+
+#Makes list of the variables that need to be converted to factors below
+dfo_factors <- c("Day Type", "Creel Subarea")
+
+#takes the raw data and cleans it up
+rec_boats_fishing2023 <- DFO_data_raw_2023%>%
+  #converts the variables specified above to factors
+  mutate_at(dfo_factors, factor)%>%
+  #renaming the columns to make them easier to code with
+  rename(rec_boats_fishing = `1. Rec Boat Fishing`,
+         rec_boats_running = `2. Rec Boats Running`,
+         comm_vessel_fishing = `3. Commercial Vessel Fishing`,
+         comm_vessel_not_fishing = `4. Commercial Vessel Not Fishing`,
+         small_comm_vessel = `5. Small Commercial Vessel`,
+         large_comm_vessel = `6. Large Commercial Vessel`,
+         whale_watching = `7.  Whale Watching Boat`,
+         orcas = `8. Orcas`,
+         whales = `9. Whales`,
+         sea_state = `10. Sea State`)%>%
+  #Replacing the cells that have "Null" with 0 and converting the count columns
+  #to numeric
+  mutate(across(c("rec_boats_fishing", "rec_boats_running", "comm_vessel_fishing", 
+                  "comm_vessel_not_fishing", "small_comm_vessel", "large_comm_vessel",
+                  "whale_watching", "orcas", "whales"), ~ ifelse(. == "<Null>", 0, .)),
+         across(c("rec_boats_fishing", "rec_boats_running", "comm_vessel_fishing", 
+                  "comm_vessel_not_fishing", "small_comm_vessel", "large_comm_vessel",
+                  "whale_watching", "orcas", "whales"), as.numeric))%>%
+  ##This code will remove the dates of the flights that had fog
+  filter(!Date %in% c("2023-06-23", "2023-07-16", "2023-07-31", "2023-08-06", "2023-08-28",
+                      "2023-08-29", "2023-09-09", "2023-09-15"))%>%
+  #Selecting only the rows where recreational boats were fishing
+ # filter(rec_boats_fishing != 0)%>%
+  #selecting all of the columns that are needed for further analysis
+    select(c(UniqueID, `Filename/FlightID`, Year, Month, Day, Date, `Critical Period`, `Day Type`, `Creel Subarea`, GMA, PFMA, 
+           `Pin ID`, Longitude, Latitude, rec_boats_fishing, rec_boats_running))
+
+#Subsetting the dataframe to have points from only the region of interest
+rec_boats_fishing2023_subset <- subset(rec_boats_fishing2023, Latitude >= 48.448217 & Latitude <= 48.800567 & 
+                                  Longitude >= -125.2459 & Longitude <= -124.499517)
+
+#These lines used to get the total numbers of boats including the amount not fishing
+rec_boats_fishing2023_subset_clean <- rec_boats_fishing2023_subset[!(rec_boats_fishing2023_subset$rec_boats_fishing == 0 &
+                                                                 rec_boats_fishing2023_subset$rec_boats_running == 0),]
+
+#Used to make the points for the analyses of the fishing boats below
+rec_boats_only_fishing2023_subset_clean <- rec_boats_fishing2023_subset[!(rec_boats_fishing2023_subset$rec_boats_fishing == 0),]
+sum(rec_boats_only_fishing2023_subset_clean$rec_boats_fishing)
+
+#Making a df for plotting with only rec boats fishing
+rec_boats_fishing_only_2023 <- rec_boats_fishing2023_subset%>%
+  filter(rec_boats_fishing != 0)
+```
+
+
+#### Loading in the 2022 data
+
+```{r Loading in the 2022 DFO data}
+DFO_data_raw_2022 <- read_csv(here("./01_raw_data/DFO_data/Overflight2022_ObservationPoints_20240124_COUNTS.csv"))
+
+#dfo_factors <- c("Day Type", "Creel Subarea")
+
+rec_boats_fishing2022 <- DFO_data_raw_2022%>%
+  mutate_at(dfo_factors, factor)%>%
+  rename(rec_boats_fishing = `1. Rec Boat Fishing`,
+         rec_boats_running = `2. Rec Boats Running`,
+         comm_vessel_fishing = `3. Commercial Vessel Fishing`,
+         comm_vessel_not_fishing = `4. Commercial Vessel Not Fishing`,
+         small_comm_vessel = `5. Small Commercial Vessel`,
+         large_comm_vessel = `6. Large Commercial Vessel`,
+         whale_watching = `7.  Whale Watching Boat`,
+         orcas = `8. Orcas`,
+         whales = `9. Whales`,
+         sea_state = `10. Sea State`)%>%
+  mutate(across(c("rec_boats_fishing", "rec_boats_running", "comm_vessel_fishing", 
+                  "comm_vessel_not_fishing", "small_comm_vessel", "large_comm_vessel",
+                  "whale_watching", "orcas", "whales"), ~ ifelse(. == "<Null>", 0, .)),
+         across(c("rec_boats_fishing", "rec_boats_running", "comm_vessel_fishing", 
+                  "comm_vessel_not_fishing", "small_comm_vessel", "large_comm_vessel",
+                  "whale_watching", "orcas", "whales"), as.numeric))%>%
+   ##This code will remove the dates of the flights that had fog
+  filter(!Date %in% c("2022-06-18", "2022-07-31", "2022-08-24", "2022-06-04"))%>%
+ #   filter(rec_boats_fishing != 0)%>%
+  #selecting all of the columns that are needed for further analysis
+    select(c(UniqueID, `Filename/FlightID`, Year, Month, Day, Date, `Critical Period`, `Day Type`, `Creel Subarea`, GMA, PFMA, 
+           `Pin ID`, Longitude, Latitude, rec_boats_fishing, rec_boats_running))
+
+#Subsetting the dataframe to have points from only the region of interest
+rec_boats_fishing2022_subset <- subset(rec_boats_fishing2022, Latitude >= 48.448217 & Latitude <= 48.800567 & 
+                                  Longitude >= -125.2459 & Longitude <= -124.499517)
+
+#filtering to only include observations where there is at least one between the two types of boats. I.E. removing rows where both are 0.
+rec_boats_fishing2022_subset_clean <- rec_boats_fishing2022_subset[!(rec_boats_fishing2022_subset$rec_boats_fishing == 0 &
+                                                                 rec_boats_fishing2022_subset$rec_boats_running == 0),]
+
+
+#Used to make the points for the analyses of the fishing boats below
+rec_boats_only_fishing2022_subset_clean <- rec_boats_fishing2022_subset[!(rec_boats_fishing2022_subset$rec_boats_fishing == 0),]
+sum(rec_boats_only_fishing2022_subset_clean$rec_boats_fishing)
+
+#Making a df for plotting with only rec boats fishing
+rec_boats_fishing_only_2022 <- rec_boats_fishing2022_subset%>%
+  filter(rec_boats_fishing != 0)
+```
+
+
+#### Loading in the 2021 data
+
+```{r Loading in the 2021 DFO data}
+DFO_data_raw_2021 <- read_csv(here("./01_raw_data/DFO_data/Overflight2021_ObservationPoints_20240321_counts.csv"))
+
+#dfo_factors <- c("Day Type", "Creel Subarea")
+
+rec_boats_fishing2021 <- DFO_data_raw_2021%>%
+  mutate_at(dfo_factors, factor)%>%
+  rename(rec_boats_fishing = `1. Rec Boat Fishing`,
+         rec_boats_running = `2. Rec Boats Running`,
+         comm_vessel_fishing = `3. Commercial Vessel Fishing`,
+         comm_vessel_not_fishing = `4. Commercial Vessel Not Fishing`,
+         small_comm_vessel = `5. Small Commercial Vessel`,
+         large_comm_vessel = `6. Large Commercial Vessel`,
+         whale_watching = `7.  Whale Watching Boat`,
+         orcas = `8. Orcas`,
+         whales = `9. Whales`,
+         sea_state = `10. Sea State`)%>%
+  mutate(across(c("rec_boats_fishing", "rec_boats_running", "comm_vessel_fishing", 
+                  "comm_vessel_not_fishing", "small_comm_vessel", "large_comm_vessel",
+                  "whale_watching", "orcas", "whales"), ~ ifelse(. == "<Null>", 0, .)),
+         across(c("rec_boats_fishing", "rec_boats_running", "comm_vessel_fishing", 
+                  "comm_vessel_not_fishing", "small_comm_vessel", "large_comm_vessel",
+                  "whale_watching", "orcas", "whales"), as.numeric))%>%
+   ##This code will remove the dates of the flights that had fog
+  filter(!Date %in% c("2021-07-31", "2021-07-19", "2021-07-20", "2021-07-24"))%>%
+  # filter(rec_boats_fishing != 0)%>%
+  select(c(UniqueID, `Filename/FlightID`, Year, Month, Day, Date, `Critical Period`, `Day Type`, `Creel Subarea`, GMA, PFMA, 
+           `Pin ID`, Longitude, Latitude, rec_boats_fishing, rec_boats_running))
+
+#Subsetting the dataframe to have points from only the region of interest
+rec_boats_fishing2021_subset <- subset(rec_boats_fishing2021, Latitude >= 48.448217 & Latitude <= 48.800567 & 
+                                  Longitude >= -125.2459 & Longitude <= -124.499517)
+
+
+rec_boats_fishing2021_subset_clean <- rec_boats_fishing2021_subset[!(rec_boats_fishing2021_subset$rec_boats_fishing == 0 
+                                                            &rec_boats_fishing2021_subset$rec_boats_running == 0),]
+
+
+#Used to make the points for the analyses of the fishing boats below
+rec_boats_only_fishing2021_subset_clean <- rec_boats_fishing2021_subset[!(rec_boats_fishing2021_subset$rec_boats_fishing == 0),]
+sum(rec_boats_only_fishing2021_subset_clean$rec_boats_fishing)
+
+
+#Making a df for plotting with only rec boats fishing
+rec_boats_fishing_only_2021 <- rec_boats_fishing2021_subset%>%
+  filter(rec_boats_fishing != 0)
+```
+
+
+#### Combining the three years of data into one data frame
+```{r Combining the three years of data by row}
+rec_boats_fishing_total <-  rbind(rec_boats_only_fishing2021_subset_clean, rec_boats_only_fishing2022_subset_clean, rec_boats_only_fishing2023_subset_clean)
+```
+
+
+```{r Making theme for all subsequent figures, echo=FALSE}
+theme.figure <- function (){
+  theme_bw(base_size = 12) +
+  theme(panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    #axis.line = element_line(colour = "black"),
+    axis.title = element_text(size = 16, face = "bold"),
+    axis.text = element_text(size = 14, face = "plain"),
+    legend.text = element_text(size = 12, face = "plain"),
+    legend.title = element_text(size = 14, face = "bold")) 
+}
+```
+
+
+## Making site maps
+
+### Making the map ranges
+
+```{r Seting the ranges for the maps}
+#In this chunk I made limits for the maps so that they show the view of 
+#Barkley Sound that I want
+lat_min = -125.2
+lat_max = -124.5
+
+long_min = 48.4
+long_max = 48.85
+```
+
+
+### Loading in the low res shape file
+
+```{r Loading in the base layer}
+#I loaded in a lower res shape file that shows all of BC in order to make a
+#large inset plot of Vancouver Island. Similar to the high res shape file I 
+#subsetted it to only include the area around Vancouver Island.
+
+VI_base_layer <- read_sf(dsn = here("./01_raw_data/canada_sf_data", ""), 
+                         stringsAsFactors = F)
+VI_base_layer_sf <- st_as_sf(VI_base_layer)
+
+#specifying the projection for the sf
+st_crs(VI_base_layer_sf) <- "+proj=longlat +datum=WGS84 +no_defs"
+
+
+shp_xmin_low <- -125.2
+shp_xmax_low <- -124.5
+shp_ymin_low <- 48.4
+shp_ymax_low <- 48.85
+
+bbox_low <- st_bbox(c(xmin = shp_xmin_low, ymin = shp_ymin_low, xmax = shp_xmax_low, ymax = shp_ymax_low))
+
+bbox_low_sf <- st_as_sfc(bbox_low)
+
+VI_base_layer_sf_subset <- st_crop(VI_base_layer_sf, bbox_low_sf)
+plot(VI_base_layer_sf_subset)
+```
+
+
+```{r loading in the RCA polygon}
+#st_read loads in the kml file and stores it as a polygon
+pachena_RCA <- st_read(here("./01_raw_data/pachena_point.kml"))
+dare_point_RCA <- st_read(here("./01_raw_data/dare_point.kml"))
+carmanah_RCA <- st_read(here("./01_raw_data/Carmanah.kml"))
+```
+
+
+```{r 2023}
+(test_plot_2023 <- ggplot()+
+    geom_sf(data = VI_base_layer_sf_subset, colour = "darkgrey", fill = "lightgrey")+
+     geom_sf(data = carmanah_RCA, fill = "blue", colour ="blue", alpha = 0.1)+
+   geom_sf(data = dare_point_RCA, fill = "blue", colour = "blue", alpha = 0.2)+
+   geom_sf(data = pachena_RCA, fill = "blue", colour = "blue", alpha = 0.2)+
+  geom_point(data = rec_boats_only_fishing2023_subset_clean, 
+             mapping = aes(x = Longitude, y = Latitude),
+             size = 0.8, fill = "#070707")+
+   # geom_point(data = rec_boats_only_fishing2022_subset_clean, 
+    #         mapping = aes(x = Longitude, y = Latitude),
+     #        size = 0.8, fill = "#070707")+
+    #geom_point(data = rec_boats_only_fishing2021_subset_clean, 
+     #        mapping = aes(x = Longitude, y = Latitude),
+      #       size = 0.8, fill = "#070707")+
+   # coord_sf(xlim = c(long_min, long_max),
+    #       ylim = c(lat_min, lat_max)) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme.figure() +
+   theme(axis.text.y = element_text(angle = 45))+
+ scale_x_continuous(breaks = c(-125.2, -124.9, -124.6)) +
+  annotation_north_arrow(
+    location = "tr",
+    which_north = "true",
+    style = north_arrow_fancy_orienteering
+  ) +
+  annotation_scale(location = "br", text_cex = 1.3))
+```
+
+```{r Saving the rec boats plo}
+ggsave("test_2023.pdf", plot = test_plot_2023,
+       path = here("./04_plots/test_plots"), width = 160, height = 120, units = "mm")
+```
+
+```{r 2022}
+(test_plot_2022 <- ggplot()+
+    geom_sf(data = VI_base_layer_sf_subset, colour = "darkgrey", fill = "lightgrey")+
+     geom_sf(data = carmanah_RCA, fill = "blue", colour ="blue", alpha = 0.1)+
+   geom_sf(data = dare_point_RCA, fill = "blue", colour = "blue", alpha = 0.2)+
+   geom_sf(data = pachena_RCA, fill = "blue", colour = "blue", alpha = 0.2)+
+  geom_point(data = rec_boats_only_fishing2022_subset_clean, 
+             mapping = aes(x = Longitude, y = Latitude),
+             size = 0.8, fill = "#070707")+
+  labs(x = "Longitude", y = "Latitude") +
+  theme.figure() +
+   theme(axis.text.y = element_text(angle = 45))+
+ scale_x_continuous(breaks = c(-125.2, -124.9, -124.6)) +
+  annotation_north_arrow(
+    location = "tr",
+    which_north = "true",
+    style = north_arrow_fancy_orienteering
+  ) +
+  annotation_scale(location = "br", text_cex = 1.3))
+```
+
+```{r Saving the rec boats plo}
+ggsave("test_2022.pdf", plot = test_plot_2022,
+       path = here("./04_plots/test_plots"), width = 160, height = 120, units = "mm")
+```
+
+```{r 2021}
+(test_plot_2021 <- ggplot()+
+    geom_sf(data = VI_base_layer_sf_subset, colour = "darkgrey", fill = "lightgrey")+
+     geom_sf(data = carmanah_RCA, fill = "blue", colour ="blue", alpha = 0.1)+
+   geom_sf(data = dare_point_RCA, fill = "blue", colour = "blue", alpha = 0.2)+
+   geom_sf(data = pachena_RCA, fill = "blue", colour = "blue", alpha = 0.2)+
+  geom_point(data = rec_boats_only_fishing2021_subset_clean, 
+             mapping = aes(x = Longitude, y = Latitude),
+             size = 0.8, fill = "#070707")+
+  labs(x = "Longitude", y = "Latitude") +
+  theme.figure() +
+   theme(axis.text.y = element_text(angle = 45))+
+ scale_x_continuous(breaks = c(-125.2, -124.9, -124.6)) +
+  annotation_north_arrow(
+    location = "tr",
+    which_north = "true",
+    style = north_arrow_fancy_orienteering
+  ) +
+  annotation_scale(location = "br", text_cex = 1.3))
+```
+
+```{r Saving the rec boats plo}
+ggsave("test_2021.pdf", plot = test_plot_2021,
+       path = here("./04_plots/test_plots"), width = 160, height = 120, units = "mm")
+```
+
+```{r Finding the number of boats spotted within protected areas}
+#Specifies to use the GEOS engine. Turns off the spherical geometry
+sf::sf_use_s2(FALSE)
+
+
+#This line loads in the recreational fishing boat data and converts the lat and
+#long to an sf object in the same CRS as the sf objects for the protected areas
+rec_boats_fishing_total_points_wgs84 <- st_as_sf(rec_boats_fishing_total, coords = c("Longitude", "Latitude"), crs = 4326)
+
+
+#These lines return the rec boat observations that are found within the 
+#protected area polygons
+rec_boats_within_carmanah <- st_intersection(carmanah_RCA, rec_boats_fishing_total_points_wgs84)
+
+rec_boats_within_dare_point <- st_intersection(dare_point_RCA, rec_boats_fishing_total_points_wgs84)
+
+rec_boats_within_pachena_point <- st_intersection(pachena_RCA, rec_boats_fishing_total_points_wgs84)
+```
+
+```{r Summing the total number of boats in protected areas and outside}
+#These lines add up all of the boats spotted within each protected area
+total_boats_carmanah <- sum(rec_boats_within_carmanah$rec_boats_fishing)
+total_boats_dare_point <- sum(rec_boats_within_dare_point$rec_boats_fishing)
+total_boats_pachena_point <- sum(rec_boats_within_pachena_point$rec_boats_fishing)
+
+
+#This adds up all of the boats for a total number spotted across all protected
+#areas
+total_boats_in_protected_areas <- total_boats_carmanah + total_boats_dare_point +
+  total_boats_pachena_point
+
+#This adds up all of the rec boats fishing that were spotted within Barkley 
+#Sound.
+total_boats_spotted <- sum(rec_boats_fishing_total$rec_boats_fishing)
+#These specify how many spotted in each year
+total_boats_spotted_2021 <- sum(rec_boats_fishing2021_subset$rec_boats_fishing)
+total_boats_spotted_2022 <- sum(rec_boats_fishing2022_subset$rec_boats_fishing)
+total_boats_spotted_2023 <- sum(rec_boats_fishing2023_subset$rec_boats_fishing)
+
+#This line calculate the percentage of observations found in protected areas
+percent_boats_in_protected_areas <- (total_boats_in_protected_areas/total_boats_spotted) * 100
+```

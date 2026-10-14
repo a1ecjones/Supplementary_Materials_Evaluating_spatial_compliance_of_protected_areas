@@ -2521,3 +2521,32 @@ I further refined the plot in inkscape and added some icons for the different sp
 ggsave("ecological_test_plot.pdf", plot = ecological_test_plot,
        path = here("./04_plots/manuscript_figures_rough"), width = 160, height = 150, units = "mm")
 ```
+
+
+### Looking at Pycno temporal trends
+
+```{r Making a df for plotting pycno trends}
+pycno_df <- overall_rls_data_final%>%
+  group_by(year)%>%
+  summarise(mean_pycno = mean(Pycnopodia_helianthoides),
+            sd_pycno = sd(Pycnopodia_helianthoides),
+            n_pycno = length(Pycnopodia_helianthoides))%>%
+  mutate(low_ci = mean_pycno - 1.96*(sd_pycno/sqrt(n_pycno)),
+         up_ci = mean_pycno + 1.96*(sd_pycno/sqrt(n_pycno)))
+
+pycno_df[pycno_df<0] <- 0
+  
+```
+
+
+```{r Making a plot of the temporal trends in Pycno abundance}
+(pycno_temp_trend_plot <- (ggplot(pycno_df, aes(x = year, y = mean_pycno))+
+  geom_point()+
+  geom_errorbar(aes(ymin = low_ci, ymax = up_ci), width = 0.1)+
+  labs(x = "Year", y = "Mean sunflower\nstar abundance\n")+
+  theme.figure()))
+```
+```{r saving the plot for further editing}
+ggsave("pycno_temp_trends.pdf", plot = pycno_temp_trend_plot,
+       path = here("./04_plots/manuscript_figures_rough"), width = 80, height = 40, units = "mm")
+```
