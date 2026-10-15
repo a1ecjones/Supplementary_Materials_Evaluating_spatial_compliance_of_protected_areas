@@ -395,3 +395,14 @@ total_boats_spotted_2023 <- sum(rec_boats_fishing2023_subset$rec_boats_fishing)
 #This line calculate the percentage of observations found in protected areas
 percent_boats_in_protected_areas <- (total_boats_in_protected_areas/total_boats_spotted) * 100
 ```
+
+
+## Seeing how many flight surveys done
+
+```{r}
+rec_boats_fishing_total$Date <-  as.Date(rec_boats_fishing_total$Date)
+boat_days <- rec_boats_fishing_total%>%
+  select(Date)%>%
+  distinct(Date)
+```
+
